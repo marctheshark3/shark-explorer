@@ -1,0 +1,75 @@
+version: '3.8'
+
+services:
+  # Ergo Node
+  ergo-node:
+    image: ergoplatform/ergo:latest
+    container_name: ergo-node
+    volumes:
+      - ergo-data:/home/ergo/.ergo
+      - ./node-config/ergo.conf:/home/ergo/.ergo/ergo.conf
+    ports:
+      - "9053:9053"
+      - "9030:9030"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9053/info"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+
+  # PostgreSQL Database for Explorer
+  postgres:
+    image: postgres:13
+    container_name: ergo-postgres
+    environment:
+      POSTGRES_USER: ergo
+      POSTGRES_PASSWORD: ergo_password
+      POSTGRES_DB: explorer
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./db-init:/docker-entrypoint-initdb.d
+    ports:
+      - "5432:5432"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ergo"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # Chain Grabber to index blockchain data
+  chain-grabber:
+    image: ergoindexer/chain-grabber:latest
+    container_name: ergo-chain-grabber
+    depends_on:
+      ergo-node:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./grabber-config:/app/config
+    restart: unless-stopped
+    environment:
+      - JAVA_OPTS=-Xmx2g
+
+  # Explorer API service
+  explorer-api:
+    image: ergoindexer/explorer-api:latest
+    container_name: ergo-explorer-api
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./api-config:/app/config
+    restart: unless-stopped
+    environment:
+      - JAVA_OPTS=-Xmx1g
+
+volumes:
+  ergo-data:
+  postgres-data:
