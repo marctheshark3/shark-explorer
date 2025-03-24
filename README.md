@@ -1,150 +1,144 @@
-# Ergo Node and Indexer
+# Shark Explorer - Ergo Blockchain Explorer
 
-This project provides a containerized setup for running an Ergo Node along with a blockchain indexer and explorer API. It allows you to have a fully functional Ergo blockchain database with search and query capabilities.
+This project provides a modern, efficient blockchain explorer for the Ergo platform with real-time indexing, API access, and monitoring capabilities.
 
 ## Components
 
-1. **Ergo Node**: The core Ergo blockchain node that syncs and validates the blockchain
-2. **PostgreSQL Database**: Stores the indexed blockchain data
-3. **Chain Grabber**: Indexes the blockchain by pulling data from the Ergo Node 
-4. **Explorer API**: Provides a REST API to query the indexed data
-
-## Project Structure
-
-```
-ergo-indexer/
-├── docker-compose.yml           # Main configuration file
-├── Dockerfile.chain-grabber     # Dockerfile for building chain grabber
-├── Dockerfile.explorer-api      # Dockerfile for building explorer API
-├── node-config/                 # Ergo Node configuration
-│   └── ergo.conf                # Node configuration file
-├── db-init/                     # Database initialization scripts
-│   └── init-schema.sql          # Database schema
-├── grabber-config/              # Chain Grabber configuration
-│   └── application.conf         # Grabber configuration file
-└── api-config/                  # Explorer API configuration
-    └── application.conf         # API configuration file
-```
+1. **PostgreSQL Database**: Stores indexed blockchain data
+2. **Redis**: Caching layer for improved performance
+3. **Shark Indexer**: Real-time blockchain data indexer
+4. **Shark API**: RESTful API for querying blockchain data
+5. **Prometheus**: Metrics collection
+6. **Grafana**: Monitoring and visualization
 
 ## Prerequisites
 
-- Docker and Docker Compose installed
-- At least 100GB of free disk space (for full blockchain)
+- Docker and Docker Compose
+- At least 100GB of free disk space
 - At least 4GB of RAM
 
-## Getting Started
+## Quick Start
 
 1. Clone this repository:
-
 ```bash
-git clone https://github.com/yourusername/ergo-indexer.git
-cd ergo-indexer
+git clone https://github.com/yourusername/shark-explorer.git
+cd shark-explorer
 ```
 
-2. Create the required directories:
-
+2. Create a `.env` file with required configuration:
 ```bash
-mkdir -p node-config db-init grabber-config api-config
+# PostgreSQL Configuration
+POSTGRES_USER=shark_user
+POSTGRES_PASSWORD=your_password
+POSTGRES_DB=shark_explorer
+
+# Redis Configuration
+REDIS_PASSWORD=your_redis_password
+
+# API Configuration
+API_PORT=8082
+LOG_LEVEL=info
+RATE_LIMIT_REQUESTS=100
+RATE_LIMIT_WINDOW=60
+
+# Indexer Configuration
+NODE_URL=http://your.ergo.node:9053
+
+# Grafana Configuration
+GRAFANA_ADMIN_USER=admin
+GRAFANA_ADMIN_PASSWORD=your_grafana_password
 ```
 
-3. Copy the configuration files into their respective directories:
-
+3. Start the services:
 ```bash
-# Copy the ergo.conf file to node-config/
-# Copy the init-schema.sql file to db-init/
-# Copy the grabber application.conf to grabber-config/
-# Copy the API application.conf to api-config/
+docker compose -f docker-compose.prod.yml up -d
 ```
 
-4. Build the custom images for Chain Grabber and Explorer API:
+## Services
 
-```bash
-docker build -f Dockerfile.chain-grabber -t ergoindexer/chain-grabber:latest .
-docker build -f Dockerfile.explorer-api -t ergoindexer/explorer-api:latest .
-```
+### API Service (port 8082)
+- RESTful API for querying blockchain data
+- Rate limiting and caching enabled
+- Swagger documentation at `/docs`
 
-5. Start the services:
+### Grafana (port 3000)
+- Access: http://localhost:3000
+- Default credentials:
+  - Username: admin
+  - Password: (from GRAFANA_ADMIN_PASSWORD in .env)
+- Pre-configured dashboards for monitoring:
+  - Blockchain metrics
+  - System performance
+  - API statistics
 
-```bash
-docker-compose up -d
-```
+### Prometheus (port 9090)
+- Metrics collection and storage
+- Used by Grafana for visualization
 
-## Usage
+### Database Schema
+The PostgreSQL database includes tables for:
+- Blocks
+- Transactions
+- Inputs/Outputs
+- Assets
+- Token information
+- Mining rewards
+- Address statistics
 
-Once the services are running, you can:
+## API Endpoints
 
-- Access the Ergo Node API at `http://localhost:9053`
-- Access the Explorer API at `http://localhost:8080`
-- Connect to the PostgreSQL database at `localhost:5432` with credentials:
-  - Username: `ergo`
-  - Password: `ergo_password`
-  - Database: `explorer`
-
-### Explorer API Endpoints
-
-The Explorer API provides several endpoints to query the blockchain data:
-
-- `/blocks` - Get information about blocks
-- `/transactions` - Query transactions
-- `/addresses` - Get address information and balance
-- `/tokens` - Query token information
-- `/stats` - Get blockchain statistics
-
-Please refer to the [Explorer API documentation](https://github.com/ergoplatform/explorer-backend) for more details.
-
-## Configuration
-
-### Ergo Node Configuration
-
-The Ergo Node is configured through `node-config/ergo.conf`. You can modify this file to adjust settings like:
-
-- Network connections
-- API settings
-- Wallet settings
-
-### Chain Grabber Configuration
-
-The Chain Grabber is configured through `grabber-config/application.conf`. Important settings include:
-
-- Database connection parameters
-- Initial block height to start indexing from
-- Processing batch size and concurrency
-
-### Explorer API Configuration
-
-The Explorer API is configured through `api-config/application.conf`. You can adjust:
-
-- API server settings
-- CORS settings
-- Cache configuration
+See `API.md` for detailed API documentation.
 
 ## Monitoring
 
-You can monitor the containers using Docker commands:
+Access Grafana at http://localhost:3000 to view:
+- Blockchain synchronization status
+- System metrics
+- API performance
+- Error rates
+- Resource usage
 
+## Development
+
+### Building Services
 ```bash
-# Check container status
-docker-compose ps
-
-# View logs for a specific service
-docker-compose logs -f ergo-node
-docker-compose logs -f chain-grabber
+docker compose -f docker-compose.prod.yml build shark-api shark-indexer
 ```
 
-## Important Notes
+### Viewing Logs
+```bash
+docker logs shark-explorer-shark-api-1
+docker logs shark-explorer-shark-indexer-1
+```
 
-- Initial blockchain synchronization may take several days depending on your hardware
-- The Chain Grabber will start indexing once the Ergo Node has synchronized enough blocks
-- Database size will grow over time as more blocks are indexed
+### Database Management
+```bash
+# Connect to PostgreSQL
+docker exec -it shark-explorer-postgres-1 psql -U shark_user -d shark_explorer
+```
 
 ## Troubleshooting
 
-- If the Chain Grabber fails to start, check that the Ergo Node is properly synchronized
-- If the Explorer API is not responding, ensure that the Chain Grabber has indexed some blocks
-- For database connectivity issues, check the PostgreSQL logs and ensure the schema was properly initialized
+1. If services fail to start, check logs:
+```bash
+docker compose -f docker-compose.prod.yml logs
+```
 
-## Resources
+2. For database issues:
+```bash
+docker logs shark-explorer-postgres-1
+```
 
-- [Ergo Platform Documentation](https://docs.ergoplatform.com/)
-- [Ergo Explorer Backend Repository](https://github.com/ergoplatform/explorer-backend)
-- [Ergo Node Repository](https://github.com/ergoplatform/ergo)
+3. To restart all services:
+```bash
+docker compose -f docker-compose.prod.yml down -v
+docker compose -f docker-compose.prod.yml up -d
+```
+
+## Contributing
+
+1. Fork the repository
+2. Create your feature branch
+3. Commit your changes
+4. Push to the branch
+5. Create a new Pull Request

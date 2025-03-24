@@ -1,0 +1,65 @@
+groups:
+  - name: shark_explorer_alerts
+    rules:
+      # High Error Rate Alert
+      - alert: HighErrorRate
+        expr: |
+          sum(rate(http_requests_total{status=~"5.."}[5m])) 
+          / 
+          sum(rate(http_requests_total[5m])) > 0.05
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: High error rate detected
+          description: "Error rate is above 5% for the last 5 minutes"
+
+      # Sync Stalled Alert
+      - alert: SyncStalled
+        expr: (node_height - indexer_height) > 10 and rate(indexer_height[15m]) == 0
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: Sync process has stalled
+          description: "Indexer height hasn't increased in 15 minutes and is more than 10 blocks behind"
+
+      # Node Connection Alert
+      - alert: NodeConnectionIssue
+        expr: up{job="shark-indexer"} == 0 or up{job="shark-api"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: Service is down
+          description: "{{ $labels.job }} is not responding"
+
+      # High Resource Usage
+      - alert: HighMemoryUsage
+        expr: process_resident_memory_bytes / 1024 / 1024 > 1024  # Alert if memory usage > 1GB
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: High memory usage detected
+          description: "{{ $labels.job }} is using more than 1GB of memory"
+
+      # High CPU Usage
+      - alert: HighCPUUsage
+        expr: rate(process_cpu_seconds_total[5m]) * 100 > 80
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: High CPU usage detected
+          description: "{{ $labels.job }} is using more than 80% CPU"
+
+      # High Request Latency
+      - alert: HighRequestLatency
+        expr: histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket[5m])) by (le)) > 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: High request latency detected
+          description: "95th percentile of request duration is above 1 second" 

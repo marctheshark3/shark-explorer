@@ -1,75 +1,66 @@
 version: '3.8'
 
 services:
-  # Ergo Node
-  ergo-node:
-    image: ergoplatform/ergo:latest
-    container_name: ergo-node
-    volumes:
-      - ergo-data:/home/ergo/.ergo
-      - ./node-config/ergo.conf:/home/ergo/.ergo/ergo.conf
-    ports:
-      - "9053:9053"
-      - "9030:9030"
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9053/info"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 120s
-
   # PostgreSQL Database for Explorer
   postgres:
-    image: postgres:13
+    image: postgres:15
     container_name: ergo-postgres
     environment:
-      POSTGRES_USER: ergo
-      POSTGRES_PASSWORD: ergo_password
-      POSTGRES_DB: explorer
+      POSTGRES_DB: ergo_explorer
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: password
     volumes:
-      - postgres-data:/var/lib/postgresql/data
+      - ./postgres-data:/var/lib/postgresql/data
       - ./db-init:/docker-entrypoint-initdb.d
     ports:
-      - "5432:5432"
-    restart: unless-stopped
+      - "5433:5432"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ergo"]
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 10s
       timeout: 5s
       retries: 5
-      start_period: 10s
+    networks:
+      - explorer-net
 
-  # Chain Grabber to index blockchain data
-  chain-grabber:
-    image: ergoindexer/chain-grabber:latest
-    container_name: ergo-chain-grabber
-    depends_on:
-      ergo-node:
-        condition: service_healthy
-      postgres:
-        condition: service_healthy
-    volumes:
-      - ./grabber-config:/app/config
-    restart: unless-stopped
-    environment:
-      - JAVA_OPTS=-Xmx2g
-
-  # Explorer API service
-  explorer-api:
-    image: ergoindexer/explorer-api:latest
-    container_name: ergo-explorer-api
-    depends_on:
-      postgres:
-        condition: service_healthy
+  redis:
+    image: redis:7
     ports:
-      - "8080:8080"
+      - "6379:6379"
     volumes:
-      - ./api-config:/app/config
-    restart: unless-stopped
+      - ./redis-data:/data
+    command: redis-server --appendonly yes
+    networks:
+      - explorer-net
+
+  shark-indexer:
+    build:
+      context: ./shark-indexer
+      dockerfile: Dockerfile
     environment:
-      - JAVA_OPTS=-Xmx1g
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_NAME=ergo_explorer
+      - DB_USER=postgres
+      - DB_PASSWORD=password
+      - NODE_URL=http://192.168.1.195:9053
+      - REDIS_HOST=redis
+      - CONNECTION_TIMEOUT=30000
+      - READ_TIMEOUT=30000
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    restart: unless-stopped
+    volumes:
+      - ./shark-indexer:/app
+    networks:
+      - explorer-net
 
 volumes:
-  ergo-data:
   postgres-data:
+  redis-data:
+
+networks:
+  explorer-net:
+    name: explorer-net

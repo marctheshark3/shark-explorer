@@ -1,0 +1,22 @@
+Goal: Set up a working Ergo Explorer instance that can sync with a local Ergo node
+
+Requirements:
+1. PostgreSQL database should be running and accessible to both services
+2. Chain-grabber service should:
+   - Connect to the Ergo node
+   - Index blockchain data into PostgreSQL
+   - Run on port 8081
+3. Explorer-api service should:
+   - Access the indexed data from PostgreSQL
+   - Provide API endpoints for querying blockchain data
+   - Run on port 8082
+4. Both services should be able to:
+   - Connect to the Ergo node at 192.168.1.195:9053
+   - Maintain stable connections without timeouts
+   - Process blockchain data efficiently
+
+Current Status:
+- PostgreSQL is running
+- Services start but cannot connect to the Ergo node
+- Node is accessible via curl from host machine
+- Using host network mode for all containers 

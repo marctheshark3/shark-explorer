@@ -74,7 +74,7 @@ cat > db-init/init-schema.sql << 'EOF'
 CREATE TABLE IF NOT EXISTS blocks (
   id VARCHAR(64) NOT NULL PRIMARY KEY,
   header_id VARCHAR(64) NOT NULL,
-  parent_id VARCHAR(64) NOT NULL,
+  parent_id VARCHAR(64),
   height INTEGER NOT NULL,
   timestamp BIGINT NOT NULL,
   difficulty BIGINT NOT NULL,

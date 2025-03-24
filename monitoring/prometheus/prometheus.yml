@@ -1,0 +1,33 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - "rules/*.yml"
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+          - "alertmanager:9093"
+
+scrape_configs:
+  - job_name: 'shark-api'
+    static_configs:
+      - targets: ['shark-api:8082']
+    metrics_path: '/metrics'
+    scrape_interval: 5s
+
+  - job_name: 'shark-indexer'
+    static_configs:
+      - targets: ['shark-indexer:8081']
+    metrics_path: '/metrics'
+    scrape_interval: 5s
+
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  - job_name: 'alertmanager'
+    static_configs:
+      - targets: ['alertmanager:9093'] 

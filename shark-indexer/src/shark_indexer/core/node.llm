@@ -1,0 +1,259 @@
+# Ergo Node API Documentation
+
+This document describes the key Ergo node API endpoints used by the indexer and their expected response formats.
+
+## Base URL
+Default: http://127.0.0.1:9053
+Current: ${NODE_URL}
+
+## Block-Related Endpoints
+
+### GET /blocks/at/{height}
+Returns block header(s) at specified height.
+
+Response format:
+```json
+[
+  {
+    "id": "block_id_string",
+    "height": number,
+    "timestamp": number,
+    "parentId": "parent_block_id_string",
+    "difficulty": number,
+    "extensionHash": "string",
+    "powSolutions": {
+      "pk": "string",
+      "w": "string",
+      "n": "string",
+      "d": number
+    },
+    "votes": "string"
+  }
+]
+```
+
+Note: Returns an array with a single header object.
+
+### GET /blocks/{blockId}
+Returns full block data for specified block ID.
+
+Response format:
+```json
+{
+  "header": {
+    "id": "block_id_string",
+    "parentId": "parent_block_id_string",
+    "timestamp": number,
+    "version": number,
+    "height": number,
+    "difficulty": number,
+    "extensionHash": "string",
+    "powSolutions": {
+      "pk": "string",
+      "w": "string",
+      "n": "string",
+      "d": number
+    },
+    "votes": "string"
+  },
+  "blockTransactions": {
+    "headerId": "block_id_string",
+    "transactions": [
+      {
+        "id": "tx_id_string",
+        "inputs": [
+          {
+            "boxId": "input_box_id_string",
+            "spendingProof": {
+              "proofBytes": "string",
+              "extension": {}
+            }
+          }
+        ],
+        "outputs": [
+          {
+            "boxId": "output_box_id_string",
+            "value": number,
+            "creationHeight": number,
+            "ergoTree": "string",
+            "assets": [
+              {
+                "tokenId": "token_id_string",
+                "amount": number
+              }
+            ],
+            "additionalRegisters": {}
+          }
+        ],
+        "size": number
+      }
+    ]
+  }
+}
+```
+
+### GET /blocks/{blockId}/header
+Returns block header for specified block ID.
+
+Response format:
+```json
+{
+  "id": "block_id_string",
+  "parentId": "parent_block_id_string",
+  "timestamp": number,
+  "version": number,
+  "height": number,
+  "difficulty": number,
+  "extensionHash": "string",
+  "powSolutions": {
+    "pk": "string",
+    "w": "string",
+    "n": "string",
+    "d": number
+  },
+  "votes": "string"
+}
+```
+
+### GET /blocks/{blockId}/transactions
+Returns transactions in the specified block.
+
+Parameters:
+- offset (optional): Number of transactions to skip
+- limit (optional): Maximum number of transactions to return
+
+Response format:
+```json
+{
+  "transactions": [
+    {
+      "id": "tx_id_string",
+      "inputs": [
+        {
+          "boxId": "input_box_id_string",
+          "spendingProof": {
+            "proofBytes": "string",
+            "extension": {}
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "boxId": "output_box_id_string",
+          "value": number,
+          "creationHeight": number,
+          "ergoTree": "string",
+          "assets": [
+            {
+              "tokenId": "token_id_string",
+              "amount": number
+            }
+          ],
+          "additionalRegisters": {}
+        }
+      ],
+      "size": number
+    }
+  ]
+}
+```
+
+## Node Info Endpoints
+
+### GET /info
+Returns current node information.
+
+Response format:
+```json
+{
+  "fullHeight": number,
+  "headersHeight": number,
+  "maxPeerHeight": number,
+  "bestFullHeight": number,
+  "bestHeaderId": "string",
+  "stateRoot": "string",
+  "stateType": "string",
+  "isMining": boolean,
+  "peersCount": number,
+  "unconfirmedCount": number,
+  "difficulty": number,
+  "currentTime": number,
+  "launchTime": number,
+  "headersDone": boolean,
+  "fullBlocksDone": boolean
+}
+```
+
+## Transaction Endpoints
+
+### GET /transactions/{txId}
+Returns transaction data by ID.
+
+Response format:
+```json
+{
+  "id": "tx_id_string",
+  "inputs": [
+    {
+      "boxId": "input_box_id_string",
+      "spendingProof": {
+        "proofBytes": "string",
+        "extension": {}
+      }
+    }
+  ],
+  "outputs": [
+    {
+      "boxId": "output_box_id_string",
+      "value": number,
+      "creationHeight": number,
+      "ergoTree": "string",
+      "assets": [
+        {
+          "tokenId": "token_id_string",
+          "amount": number
+        }
+      ],
+      "additionalRegisters": {}
+    }
+  ],
+  "size": number
+}
+```
+
+### GET /transactions/unconfirmed
+Returns unconfirmed transactions.
+
+Parameters:
+- offset (optional): Number of transactions to skip
+- limit (optional): Maximum number of transactions to return
+
+Response format:
+```json
+{
+  "transactions": [
+    {
+      "id": "tx_id_string",
+      "inputs": [...],
+      "outputs": [...],
+      "size": number
+    }
+  ]
+}
+```
+
+## Error Handling
+
+Common error responses:
+- 400: Bad Request - Invalid parameters
+- 404: Not Found - Resource doesn't exist
+- 500: Internal Server Error - Node error
+
+Error response format:
+```json
+{
+  "error": number,
+  "reason": "string",
+  "detail": "string"
+}
+``` 

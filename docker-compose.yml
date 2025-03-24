@@ -1,0 +1,65 @@
+version: '3.8'
+
+services:
+  ergo-postgres:
+    image: postgres:13
+    container_name: ergo-postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: ergo_explorer
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./db-init:/docker-entrypoint-initdb.d
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - ergo-network
+
+  shark-indexer:
+    build: ./shark-indexer
+    container_name: shark-indexer
+    environment:
+      POSTGRES_HOST: ergo-postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: ergo_explorer
+      NODE_URL: http://192.168.1.195:9053
+    depends_on:
+      ergo-postgres:
+        condition: service_healthy
+    ports:
+      - "8081:8081"
+    networks:
+      - ergo-network
+
+  shark-api:
+    build: ./shark-api
+    container_name: shark-api
+    environment:
+      POSTGRES_HOST: ergo-postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: ergo_explorer
+      NODE_URL: http://192.168.1.195:9053
+    depends_on:
+      ergo-postgres:
+        condition: service_healthy
+    ports:
+      - "8082:8082"
+    networks:
+      - ergo-network
+
+volumes:
+  postgres_data:
+
+networks:
+  ergo-network:
+    driver: bridge 
