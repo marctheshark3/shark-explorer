@@ -158,3 +158,47 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 - PostgreSQL
 - Prometheus
 - Grafana
+
+## Performance Optimizations
+
+The Shark Indexer includes several performance optimizations to speed up the indexing process:
+
+### Parallel Processing
+
+The indexer can process multiple blocks in parallel, significantly improving throughput. This is
+controlled by the following parameters:
+
+- `--batch-size`: Number of blocks to process in each batch (default: 20)
+- `--workers`: Maximum number of concurrent workers (default: 5)
+- `--no-parallel`: Disable parallel processing and use sequential mode
+
+### Bulk Database Operations
+
+Database operations are optimized with bulk inserts and batched operations, reducing the overhead
+of individual SQL statements and transactions.
+
+- `--no-bulk`: Disable bulk operations and use individual inserts
+
+### Caching with Redis
+
+API responses from the Ergo node can be cached in Redis to reduce network overhead and
+improve performance for repeated requests.
+
+- `--no-cache`: Disable Redis caching
+
+### Benchmarking
+
+A benchmark script is provided to measure and compare the performance of different modes:
+
+```bash
+# Compare sequential vs parallel modes
+python shark-indexer/benchmark_indexer.py --start 100000 --count 100 --compare
+
+# Run only sequential benchmark
+python shark-indexer/benchmark_indexer.py --start 100000 --count 100 --sequential
+
+# Run only parallel benchmark with custom parameters
+python shark-indexer/benchmark_indexer.py --start 100000 --count 100 --parallel --batch-size 30 --workers 8
+```
+
+Benchmark results are written to a JSON file for analysis.
