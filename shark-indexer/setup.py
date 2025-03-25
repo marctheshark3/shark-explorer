@@ -31,7 +31,7 @@ setup(
     },
     entry_points={
         "console_scripts": [
-            "shark-indexer=shark_indexer.__main__:main",
+            "shark-indexer=shark_indexer.__main__:run_main",
         ]
     },
 ) 

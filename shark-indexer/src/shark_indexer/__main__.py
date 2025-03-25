@@ -36,7 +36,20 @@ structlog.configure(
 logger = structlog.get_logger()
 
 def parse_args():
-    """Parse command line arguments."""
+    """
+    Parse command line arguments for the Ergo Shark Indexer.
+    
+    Returns:
+        argparse.Namespace: The parsed command line arguments
+    
+    Options:
+        --reset-db: Reset the database before starting the indexer
+        --batch-size: Number of blocks to process in parallel (default: 20)
+        --workers: Number of parallel workers for processing blocks (default: 5)
+        --no-parallel: Disable parallel processing and use sequential mode
+        --no-bulk: Disable bulk inserts and use individual database operations
+        --no-cache: Disable Redis caching for API responses
+    """
     parser = argparse.ArgumentParser(description="Ergo Shark Indexer")
     parser.add_argument("--reset-db", action="store_true", help="Reset the database")
     parser.add_argument("--batch-size", type=int, default=20, help="Number of blocks to process in parallel")
@@ -154,4 +167,8 @@ async def main():
         logger.info(f"Total runtime: {total_runtime:.2f} seconds")
 
 if __name__ == '__main__':
-    asyncio.run(main()) 
+    asyncio.run(main())
+else:
+    # This is needed for the entry point to work correctly
+    def run_main():
+        return asyncio.run(main()) 
