@@ -134,10 +134,42 @@ async def bulk_insert_mappings(session: AsyncSession, model_class: Type[ModelTyp
         record_count = len(mappings)
         performance_tracker.increment_counter(f"bulk_insert_{model_class.__name__}", record_count)
         
-        # Insert in batches to avoid memory issues with very large datasets
-        for i in range(0, record_count, batch_size):
-            batch = mappings[i:i+batch_size]
-            await session.bulk_insert_mappings(model_class, batch)
+        # Check if the session supports bulk_insert_mappings
+        if hasattr(session, 'bulk_insert_mappings'):
+            # Insert in batches to avoid memory issues with very large datasets
+            for i in range(0, record_count, batch_size):
+                batch = mappings[i:i+batch_size]
+                try:
+                    await session.bulk_insert_mappings(model_class, batch)
+                except Exception as e:
+                    # If we get a foreign key constraint error, fall back to individual inserts
+                    if "ForeignKeyViolation" in str(e) or "foreign key constraint" in str(e):
+                        logger.warning(f"Foreign key constraint violation in bulk insert, falling back to individual inserts",
+                                      model=model_class.__name__, batch_size=len(batch), error=str(e))
+                        # Fall back to individual inserts for this batch
+                        for mapping in batch:
+                            try:
+                                instance = model_class(**mapping)
+                                session.add(instance)
+                                # Flush after each record to ensure dependencies are created
+                                await session.flush()
+                            except Exception as inner_e:
+                                logger.error(f"Error in individual insert fallback",
+                                           model=model_class.__name__, error=str(inner_e))
+                                raise
+                    else:
+                        # Re-raise other exceptions
+                        raise
+        else:
+            # Fallback to individual inserts if bulk_insert_mappings is not available
+            logger.warning(f"Bulk insert not available, falling back to individual inserts", 
+                          model=model_class.__name__, count=record_count)
+            for mapping in mappings:
+                # Create instance of the model with the mapping data
+                instance = model_class(**mapping)
+                session.add(instance)
+            # Flush to ensure all objects are created in the database
+            await session.flush()
         
         logger.debug(f"Bulk inserted records", 
                    model=model_class.__name__, 

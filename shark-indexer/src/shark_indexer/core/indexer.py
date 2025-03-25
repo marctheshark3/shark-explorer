@@ -185,54 +185,34 @@ class IndexerService:
     @timed("process_height_range")
     async def _process_height_range(self, start_height: int, end_height: int):
         """Process a range of block heights in parallel."""
-        logger.info("Processing height range", start=start_height, end=end_height)
-        
-        # Fetch block data for the range in parallel
-        blocks_data = await self.node.get_blocks_in_range(start_height, end_height)
-        
-        if not blocks_data:
-            logger.warning("No valid blocks fetched for range", start=start_height, end=end_height)
+        if start_height > end_height:
+            logger.warning("Start height greater than end height", start=start_height, end=end_height)
             return
-            
-        logger.info(f"Fetched {len(blocks_data)} blocks for processing", 
-                  start=start_height, end=end_height)
+
+        batch_size = self.config['batch_size']
+        logger.info("Processing blocks in sequence to maintain referential integrity", 
+                   start=start_height, end=end_height)
         
-        # Process all blocks in parallel with limited concurrency
-        semaphore = asyncio.Semaphore(self.config['max_workers'])
-        
-        async def process_block_with_semaphore(block_data):
-            async with semaphore:
-                try:
-                    await self._process_block_with_transactions(block_data)
-                    return True
-                except Exception as e:
-                    logger.error(
-                        "Error processing block in parallel", 
-                        height=block_data.get('height'), 
-                        error=str(e),
-                        exc_info=True
-                    )
-                    self.stats['errors'] += 1
-                    return False
-        
-        # Create processing tasks
-        tasks = [process_block_with_semaphore(block_data) for block_data in blocks_data]
-        
-        # Execute all tasks and wait for completion
-        results = await asyncio.gather(*tasks)
-        
-        # Update sync status with the highest successfully processed block
-        successful_blocks = results.count(True)
-        if successful_blocks > 0:
-            async with get_session() as session:
-                status = await self._get_or_create_sync_status(session)
-                status.current_height = start_height + successful_blocks - 1
-                await session.commit()
-            
-            self.stats['blocks_processed'] += successful_blocks
-            logger.info(f"Successfully processed {successful_blocks} blocks in parallel")
-        else:
-            logger.error("Failed to process any blocks in the range", start=start_height, end=end_height)
+        # Process blocks one at a time in ascending order to maintain referential integrity
+        for height in range(start_height, end_height + 1):
+            try:
+                # Process each block sequentially
+                logger.info(f"Processing block height {height}")
+                await self._process_height(height)
+                
+                # Increment the sync status after each block
+                async with get_session() as session:
+                    status = await self._get_or_create_sync_status(session)
+                    status.current_height = height
+                    await session.commit()
+                
+                # Give the database a moment to catch up
+                await asyncio.sleep(0.1)
+                
+            except Exception as e:
+                logger.error("Error processing block in sequence", 
+                            height=height, error=str(e), exc_info=True)
+                # Don't break the loop - try to continue with next block
 
     @timed("process_block_with_transactions")
     async def _process_block_with_transactions(self, block_data: Dict[str, Any]):
@@ -628,4 +608,19 @@ class IndexerService:
 
     def _calculate_script_complexity(self, ergo_tree: str) -> int:
         # ... existing implementation ...
-        pass 
+        pass
+
+    async def _process_block_with_semaphore(self, semaphore: asyncio.Semaphore, height: int):
+        """Process a block with semaphore to limit concurrency."""
+        async with semaphore:
+            try:
+                # Get block data
+                block_data = await self.node.get_block_by_height(height)
+                
+                # Process the block
+                result = await self._process_block_with_transactions(block_data)
+                return result
+            except Exception as e:
+                logger.error("Error in processing block with semaphore", 
+                            height=height, error=str(e))
+                raise 

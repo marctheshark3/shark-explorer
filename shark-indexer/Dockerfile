@@ -14,6 +14,9 @@ COPY . .
 RUN pip install requests>=2.31.0
 RUN pip install -e .
 
+# Install aioredis specifically to fix dependency issues
+RUN pip install aioredis==2.0.1
+
 # Create and switch to non-root user
 RUN useradd -m indexer
 USER indexer
