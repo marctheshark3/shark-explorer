@@ -236,26 +236,68 @@ class NodeClient:
 
     @timed("node_get_block_range")
     async def get_blocks_in_range(self, start_height: int, end_height: int) -> List[Dict[str, Any]]:
-        """Get multiple blocks in a range efficiently."""
+        """Get multiple blocks in a range efficiently with improved concurrency and fault tolerance."""
         if start_height > end_height:
             raise ValueError(f"Start height ({start_height}) must be <= end height ({end_height})")
+        
+        total_blocks = end_height - start_height + 1
+        logger.info(f"Fetching {total_blocks} blocks from height {start_height} to {end_height}")
+        
+        # Use a semaphore to control concurrency and prevent overloading the node
+        # This creates a sliding window of concurrent requests
+        max_concurrent = min(20, total_blocks)  # Cap at 20 concurrent requests
+        semaphore = asyncio.Semaphore(max_concurrent)
+        
+        async def fetch_block_with_retry(height, max_retries=3):
+            """Fetch a single block with retry logic and semaphore control."""
+            retry_count = 0
+            backoff = 1.0
             
+            while retry_count <= max_retries:
+                try:
+                    async with semaphore:
+                        return await self.get_block_by_height(height)
+                except Exception as e:
+                    retry_count += 1
+                    if retry_count > max_retries:
+                        logger.error(f"Failed to fetch block at height {height} after {max_retries} retries: {str(e)}")
+                        return Exception(f"Failed to fetch block at height {height}: {str(e)}")
+                    
+                    # Exponential backoff
+                    logger.warning(f"Retrying block fetch for height {height} (attempt {retry_count}/{max_retries})")
+                    await asyncio.sleep(backoff)
+                    backoff *= 2  # Exponential backoff
+        
         # Create tasks for each block in the range
-        tasks = [self.get_block_by_height(height) for height in range(start_height, end_height + 1)]
+        tasks = [fetch_block_with_retry(height) for height in range(start_height, end_height + 1)]
         
         # Execute tasks concurrently and gather results
-        blocks = await asyncio.gather(*tasks, return_exceptions=True)
+        # Use gather instead of wait to get results in order
+        blocks = await asyncio.gather(*tasks)
         
-        # Filter out exceptions and log errors
+        # Filter out exceptions
         valid_blocks = []
+        error_count = 0
+        
         for i, result in enumerate(blocks):
             height = start_height + i
             if isinstance(result, Exception):
+                error_count += 1
                 logger.error(f"Failed to fetch block at height {height}: {str(result)}")
                 performance_tracker.increment_counter("blocks_fetch_errors")
             else:
                 valid_blocks.append(result)
-                
+        
+        success_rate = len(valid_blocks) / total_blocks if total_blocks > 0 else 0
+        logger.info(
+            f"Fetched {len(valid_blocks)}/{total_blocks} blocks successfully", 
+            success_rate=f"{success_rate:.1%}",
+            errors=error_count
+        )
+        
+        # Sort by height to ensure proper order
+        valid_blocks.sort(key=lambda block: block.get('height', 0))
+        
         return valid_blocks
 
     async def get_block_by_id(self, block_id: str) -> Dict[str, Any]:

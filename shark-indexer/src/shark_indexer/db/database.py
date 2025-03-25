@@ -232,34 +232,81 @@ async def check_db_health() -> Dict[str, Any]:
 
 # Context manager for batch operations
 @asynccontextmanager
-async def batch_operation_context(session: Optional[AsyncSession] = None):
+async def batch_operation_context(session: Optional[AsyncSession] = None, isolation_level: str = "READ COMMITTED"):
     """Context manager for batch operations.
     
-    This context manager handles:
-    1. Creating a session if one isn't provided
-    2. Managing the transaction
-    3. Timing the operation
-    
-    Usage:
-        async with batch_operation_context() as session:
-            await bulk_insert_mappings(session, Model, records)
+    Args:
+        session: Optional existing session to use. If None, a new session is created.
+        isolation_level: Transaction isolation level.
     """
     start_time = time.time()
-    session_provided = session is not None
-    
-    if not session_provided:
+    close_session = session is None
+    if close_session:
         session = async_session()
-    
     try:
+        await session.execute(text(f"SET TRANSACTION ISOLATION LEVEL {isolation_level.upper()}"))
         yield session
-        if not session_provided:
-            await session.commit()
-        
-        performance_tracker.record_timing("batch_operation", time.time() - start_time)
-    except Exception:
-        if not session_provided:
-            await session.rollback()
+        await session.commit()
+        duration = time.time() - start_time
+        performance_tracker.record_timing("db_batch_operation", duration)
+        logger.debug("Batch operation completed", duration=f"{duration:.2f}s")
+    except Exception as e:
+        await session.rollback()
+        logger.error("Batch operation failed, transaction rolled back", error=str(e))
         raise
     finally:
-        if not session_provided:
-            await session.close() 
+        if close_session:
+            await session.close()
+
+@asynccontextmanager
+async def multi_block_transaction(block_count: int = 1):
+    """Optimized context manager for processing multiple blocks in a single transaction.
+    
+    This context manager is designed for handling multiple blocks in a single
+    transaction with optimized settings based on the number of blocks.
+    
+    Args:
+        block_count: Number of blocks to be processed in this transaction
+    """
+    start_time = time.time()
+    session = async_session()
+    
+    try:
+        # For larger batch sizes, adjust the isolation level and prefetch settings
+        if block_count > 10:
+            # For many blocks, use READ COMMITTED for better concurrency
+            await session.execute(text("SET TRANSACTION ISOLATION LEVEL READ COMMITTED"))
+            # Increase work_mem for complex queries
+            await session.execute(text("SET LOCAL work_mem = '32MB'"))
+        elif block_count > 1:
+            # For a few blocks, still use READ COMMITTED
+            await session.execute(text("SET TRANSACTION ISOLATION LEVEL READ COMMITTED"))
+        else:
+            # For single block processing, use default isolation
+            pass
+            
+        # Note isolation level in logs
+        logger.debug("Starting multi-block transaction", block_count=block_count)
+            
+        yield session
+        
+        await session.commit()
+        duration = time.time() - start_time
+        performance_tracker.record_timing("multi_block_transaction", duration)
+        blocks_per_second = block_count / max(0.1, duration)
+        logger.info(
+            "Multi-block transaction completed", 
+            block_count=block_count, 
+            duration=f"{duration:.2f}s",
+            blocks_per_second=f"{blocks_per_second:.2f}"
+        )
+    except Exception as e:
+        await session.rollback()
+        logger.error(
+            "Multi-block transaction failed", 
+            block_count=block_count, 
+            error=str(e)
+        )
+        raise
+    finally:
+        await session.close() 

@@ -66,10 +66,11 @@ services:
       - DB_NAME=ergo_explorer
       - DB_USER=postgres
       - DB_PASSWORD=password
-      - NODE_URL=http://192.168.1.195:9053
+      - NODE_URL=http://213.239.193.208:9053
       - REDIS_HOST=redis
       - CONNECTION_TIMEOUT=30000
       - READ_TIMEOUT=30000
+    command: python -m shark_indexer --optimize-speed
     depends_on:
       postgres:
         condition: service_healthy

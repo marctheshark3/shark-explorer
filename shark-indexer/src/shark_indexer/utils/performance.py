@@ -3,6 +3,8 @@ import asyncio
 from typing import List, Dict, Any, Optional, Callable, Awaitable
 import structlog
 from functools import wraps
+import functools
+import statistics
 
 logger = structlog.get_logger()
 
@@ -116,20 +118,18 @@ def timed(operation: str):
     return decorator
 
 class Timer:
-    """Context manager for timing operations."""
+    """Simple timer utility to measure execution time."""
     
-    def __init__(self, operation: str):
-        self.operation = operation
-        self.start_time = None
-        
-    async def __aenter__(self):
+    def __init__(self):
         self.start_time = time.time()
-        return self
         
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
-        if self.start_time is not None:
-            duration = time.time() - self.start_time
-            performance_tracker.record_timing(self.operation, duration)
+    def elapsed(self) -> float:
+        """Return elapsed time in seconds since timer was created."""
+        return time.time() - self.start_time
+        
+    def reset(self) -> None:
+        """Reset the timer."""
+        self.start_time = time.time()
 
 async def benchmark_indexer(func: Callable[..., Awaitable], *args, **kwargs) -> Dict[str, Any]:
     """Benchmark a function with the given arguments.

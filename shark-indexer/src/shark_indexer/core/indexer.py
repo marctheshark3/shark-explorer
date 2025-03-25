@@ -10,7 +10,7 @@ from sqlalchemy.orm import registry
 from concurrent.futures import ThreadPoolExecutor
 
 from ..db.models import Block, Transaction, Input, Output, Asset, SyncStatus, MiningReward, AddressStats, TokenInfo, AssetMetadata, mapper_registry
-from ..db.database import get_session, bulk_insert_mappings, batch_operation_context
+from ..db.database import get_session, bulk_insert_mappings, batch_operation_context, multi_block_transaction
 from ..utils.performance import timed, performance_tracker, Timer
 from ..utils.redis_client import redis_client
 from .node import NodeClient
@@ -90,28 +90,53 @@ class IndexerService:
 
                 # Determine how many blocks to process in this batch
                 remaining_blocks = self.target_height - self.current_height
-                blocks_to_process = min(self.config['batch_size'], remaining_blocks)
+                
+                # Dynamically adjust batch size based on remaining blocks
+                # Process larger batches when far behind, smaller batches when almost caught up
+                dynamic_batch_size = min(
+                    self.config['batch_size'],
+                    max(10, min(remaining_blocks, self.config['batch_size'] * 2 if remaining_blocks > 1000 else self.config['batch_size']))
+                )
+                
+                blocks_to_process = min(dynamic_batch_size, remaining_blocks)
+                
+                logger.info(
+                    "Starting indexing batch", 
+                    current_height=self.current_height,
+                    target_height=self.target_height,
+                    remaining=remaining_blocks,
+                    batch_size=blocks_to_process
+                )
                 
                 # Process blocks in batch
                 if self.config['parallel_mode'] and blocks_to_process > 1:
+                    batch_start_time = time.time()
+                    
                     await self._process_height_range(
                         self.current_height + 1, 
                         self.current_height + blocks_to_process
                     )
+                    
+                    batch_time = time.time() - batch_start_time
+                    blocks_per_second = blocks_to_process / max(0.1, batch_time)
+                    
                     self.current_height += blocks_to_process
+                    self.stats['blocks_processed'] += blocks_to_process
                 else:
-                    # Traditional sequential processing
+                    # Traditional sequential processing for single blocks
                     await self._process_height(self.current_height + 1)
                     self.current_height += 1
+                    blocks_per_second = 1  # Just processed one block
 
-                # Record metrics
-                blocks_per_second = self.stats['blocks_processed'] / max(1, time.time() - self.stats['start_time'])
+                # Record metrics and log progress
+                total_blocks_per_second = self.stats['blocks_processed'] / max(1, time.time() - self.stats['start_time'])
                 logger.info(
                     "Indexing progress", 
                     height=self.current_height,
                     target=self.target_height,
                     remaining=self.target_height - self.current_height,
-                    blocks_per_second=f"{blocks_per_second:.2f}"
+                    last_batch_blocks_per_second=f"{blocks_per_second:.2f}",
+                    overall_blocks_per_second=f"{total_blocks_per_second:.2f}"
                 )
 
             except Exception as e:
@@ -184,35 +209,411 @@ class IndexerService:
 
     @timed("process_height_range")
     async def _process_height_range(self, start_height: int, end_height: int):
-        """Process a range of block heights in parallel."""
+        """Process a range of block heights in parallel using a producer-consumer pattern."""
         if start_height > end_height:
             logger.warning("Start height greater than end height", start=start_height, end=end_height)
             return
 
-        batch_size = self.config['batch_size']
-        logger.info("Processing blocks in sequence to maintain referential integrity", 
-                   start=start_height, end=end_height)
+        # Check if we need to process blocks sequentially first to maintain referential integrity
+        sequential_steps = self.config.get('sequential_steps', 20)
+        current_height = start_height
         
-        # Process blocks one at a time in ascending order to maintain referential integrity
-        for height in range(start_height, end_height + 1):
-            try:
-                # Process each block sequentially
-                logger.info(f"Processing block height {height}")
+        # First, process a small batch of blocks sequentially to establish chain integrity
+        if sequential_steps > 0 and (end_height - start_height) > 1:
+            seq_end_height = min(start_height + sequential_steps - 1, end_height)
+            logger.info({
+                "event": "Processing initial blocks sequentially to maintain referential integrity",
+                "start_height": start_height,
+                "end_height": seq_end_height
+            })
+            
+            # Process blocks sequentially
+            for height in range(start_height, seq_end_height + 1):
                 await self._process_height(height)
-                
-                # Increment the sync status after each block
+            
+            # Update current height for parallel processing
+            current_height = seq_end_height + 1
+            
+            # If we've processed all blocks sequentially, we're done
+            if current_height > end_height:
+                logger.info(f"Completed processing block range sequentially", 
+                           start=start_height, end=end_height)
+                # Update the current height in the database
                 async with get_session() as session:
                     status = await self._get_or_create_sync_status(session)
-                    status.current_height = height
+                    status.current_height = end_height
                     await session.commit()
+                return
+        
+        # For remaining blocks, use parallel processing with queues
+        logger.info(f"Processing remaining blocks in parallel", 
+                   start=current_height, end=end_height)
+        
+        # Create a queue for blocks to be processed
+        block_queue = asyncio.Queue(maxsize=self.config['batch_size'] * 2)
+        
+        # Create a semaphore to limit concurrent processing
+        semaphore = asyncio.Semaphore(self.config['max_workers'])
+        
+        # Start the producer task to fetch blocks
+        producer_task = asyncio.create_task(self._block_producer(block_queue, current_height, end_height))
+        
+        # Start consumer workers
+        consumer_tasks = [
+            asyncio.create_task(self._block_consumer(block_queue, semaphore))
+            for _ in range(self.config['max_workers'])
+        ]
+        
+        # Wait for the producer to finish
+        await producer_task
+        
+        # Signal consumers to stop by adding None to the queue
+        for _ in range(len(consumer_tasks)):
+            await block_queue.put(None)
+        
+        # Wait for all consumers to finish
+        await asyncio.gather(*consumer_tasks)
+        
+        # Update the current height in the database
+        async with get_session() as session:
+            status = await self._get_or_create_sync_status(session)
+            status.current_height = end_height
+            await session.commit()
+        
+        logger.info(f"Completed processing block range", start=start_height, end=end_height)
+
+    async def _block_producer(self, queue: asyncio.Queue, start_height: int, end_height: int):
+        """Fetch blocks from the node and add them to the queue."""
+        try:
+            # Use configurable fetch batch size
+            fetch_batch_size = self.config.get('fetch_batch_size', 20)
+            total_blocks = end_height - start_height + 1
+            
+            logger.info(
+                f"Starting block producer", 
+                start=start_height, 
+                end=end_height, 
+                total=total_blocks,
+                fetch_batch_size=fetch_batch_size
+            )
+            
+            current_height = start_height
+            blocks_fetched = 0
+            fetch_start_time = time.time()
+            
+            # Use smaller batches for better control over ordering
+            # This helps with foreign key constraints by ensuring parent blocks are processed
+            # before child blocks in case of any out-of-order processing
+            adjusted_batch_size = min(fetch_batch_size, 20)  # Cap batch size for better control
+            
+            while current_height <= end_height and self.is_running:
+                # Calculate batch size for this iteration
+                remaining = end_height - current_height + 1
+                current_batch_size = min(adjusted_batch_size, remaining)
+                batch_end = current_height + current_batch_size - 1
                 
-                # Give the database a moment to catch up
-                await asyncio.sleep(0.1)
+                # Create a timer for this batch
+                batch_timer = Timer()
                 
+                # Fetch a batch of blocks in correct height order
+                blocks = await self.node.get_blocks_in_range(current_height, batch_end)
+                
+                # Sort blocks by height to guarantee order
+                blocks.sort(key=lambda b: b.get('height', 0))
+                
+                blocks_fetched += len(blocks)
+                
+                # Log the fetch performance
+                batch_time = batch_timer.elapsed()
+                blocks_per_second = len(blocks) / max(0.1, batch_time)
+                
+                logger.info(
+                    "Fetched blocks batch", 
+                    start=current_height,
+                    end=batch_end,
+                    fetched=len(blocks),
+                    expected=current_batch_size,
+                    time=f"{batch_time:.2f}s",
+                    blocks_per_second=f"{blocks_per_second:.2f}",
+                    queue_size=queue.qsize(),
+                    memory_usage=f"{self.get_memory_usage():.1f}MB"
+                )
+                    
+                # Put each block in the queue in height order
+                for block in blocks:
+                    if not self.is_running:
+                        break
+                    await queue.put(block)
+                    
+                # Update current height
+                current_height = batch_end + 1
+                
+                # Calculate overall progress
+                progress_pct = min(100, 100 * (blocks_fetched / total_blocks))
+                elapsed = time.time() - fetch_start_time
+                blocks_per_second_total = blocks_fetched / max(0.1, elapsed)
+                
+                # Log overall progress periodically
+                if blocks_fetched % (fetch_batch_size * 5) == 0 or current_height > end_height:
+                    logger.info(
+                        "Block fetching progress", 
+                        fetched=blocks_fetched,
+                        total=total_blocks,
+                        progress=f"{progress_pct:.1f}%",
+                        time=f"{elapsed:.1f}s",
+                        blocks_per_second=f"{blocks_per_second_total:.2f}",
+                        estimated_remaining=f"{(total_blocks - blocks_fetched) / max(1, blocks_per_second_total):.1f}s" if blocks_per_second_total > 0 else "N/A"
+                    )
+                    
+                # Apply backpressure if queue is getting full
+                queue_size = queue.qsize()
+                if queue_size > self.config.get('batch_size', 20) * 1.5:  # Lower threshold
+                    # More aggressive backoff to ensure consumers can catch up
+                    wait_time = min(2.0, 0.2 * (queue_size / self.config.get('batch_size', 20)))
+                    logger.debug(f"Applying backpressure - queue size: {queue_size}, waiting {wait_time:.2f}s")
+                    await asyncio.sleep(wait_time)
+                    
+        except Exception as e:
+            logger.error("Error in block producer", error=str(e), exc_info=True)
+            raise
+
+    def get_memory_usage(self):
+        """Get current memory usage in MB."""
+        try:
+            import psutil
+            process = psutil.Process()
+            memory_info = process.memory_info()
+            return memory_info.rss / 1024 / 1024  # Convert to MB
+        except ImportError:
+            return 0.0  # psutil not available
+
+    async def _block_consumer(self, queue: asyncio.Queue, semaphore: asyncio.Semaphore):
+        """Process blocks from the queue with controlled concurrency and batching."""
+        batch = []
+        batch_max_size = min(self.config.get('db_batch_size', 10), 5)  # Smaller batches for better error handling
+        last_batch_time = time.time()
+        
+        # Track heights we've seen to detect potential ordering issues
+        processed_heights = set()
+        consecutive_failures = 0
+        max_consecutive_failures = 3
+        
+        # Get the last processed height from the database to use as reference
+        async with get_session() as session:
+            status = await self._get_or_create_sync_status(session)
+            last_processed_height = status.current_height
+        
+        while True:
+            try:
+                # Get block from queue with timeout to allow periodic batch processing
+                try:
+                    block_data = await asyncio.wait_for(queue.get(), timeout=1.0)
+                    
+                    # Check for termination signal
+                    if block_data is None:
+                        # Process any remaining blocks in batch before exiting
+                        if batch:
+                            async with semaphore:
+                                await self._process_blocks_batch(batch)
+                            batch = []
+                        queue.task_done()
+                        break
+                    
+                    # Extract block height for ordering checks
+                    block_height = block_data.get('height')
+                    
+                    # Check for missing parent blocks
+                    # If parent blocks are missing, queue might be out of order
+                    # This is a heuristic check - not perfect but helpful
+                    if block_height > last_processed_height + 1:  # Not the first block
+                        # Check if previous height was processed
+                        if block_height - 1 not in processed_heights and block_height - 1 > last_processed_height:
+                            logger.warning(
+                                "Potential block ordering issue detected",
+                                height=block_height,
+                                missing_parent=block_height - 1,
+                                last_processed=last_processed_height
+                            )
+                            # Handle this block individually to avoid foreign key issues
+                            async with semaphore:
+                                await self._process_height(block_height)
+                            processed_heights.add(block_height)
+                            queue.task_done()
+                            consecutive_failures = 0
+                            continue
+                        
+                    # Add to current batch
+                    batch.append(block_data)
+                    queue.task_done()
+                    
+                except asyncio.TimeoutError:
+                    # No block received within timeout, continue to batch processing check
+                    pass
+                    
+                # Process batch if it's full or if enough time has passed
+                current_time = time.time()
+                batch_timeout = (current_time - last_batch_time) > 5.0  # 5-second timeout
+                
+                if len(batch) >= batch_max_size or (batch and batch_timeout):
+                    logger.debug(f"Processing batch of {len(batch)} blocks (timeout: {batch_timeout})")
+                    try:
+                        async with semaphore:
+                            success = await self._process_blocks_batch(batch)
+                        
+                        # Add successfully processed heights to our tracking set
+                        for block in batch:
+                            processed_heights.add(block.get('height'))
+                        
+                        consecutive_failures = 0
+                    except Exception as batch_error:
+                        consecutive_failures += 1
+                        logger.error(
+                            "Batch processing failed",
+                            error=str(batch_error),
+                            consecutive_failures=consecutive_failures
+                        )
+                        
+                        # If we've had multiple consecutive failures, switch to individual processing
+                        if consecutive_failures >= max_consecutive_failures:
+                            logger.warning(
+                                "Multiple consecutive batch failures detected, switching to individual processing"
+                            )
+                            # Process each block individually
+                            for block in batch:
+                                try:
+                                    height = block.get('height')
+                                    async with semaphore:
+                                        await self._process_height(height)
+                                    processed_heights.add(height)
+                                except Exception as individual_error:
+                                    logger.error(
+                                        "Individual block processing failed",
+                                        height=block.get('height'),
+                                        error=str(individual_error)
+                                    )
+                            # Reset failure counter
+                            consecutive_failures = 0
+                    
+                    # Reset batch and timer
+                    batch = []
+                    last_batch_time = current_time
+                    
             except Exception as e:
-                logger.error("Error processing block in sequence", 
-                            height=height, error=str(e), exc_info=True)
-                # Don't break the loop - try to continue with next block
+                logger.error(
+                    "Error in block consumer", 
+                    error=str(e), 
+                    exc_info=True
+                )
+                # Don't fail the whole consumer on error
+                if batch:
+                    logger.warning(f"Discarding batch of {len(batch)} blocks due to error")
+                    batch = []
+                    last_batch_time = time.time()
+
+    @timed("process_blocks_batch")
+    async def _process_blocks_batch(self, blocks: List[Dict[str, Any]]):
+        """Process multiple blocks in a single optimized database transaction."""
+        if not blocks:
+            return
+        
+        block_count = len(blocks)
+        block_heights = [block.get('height', '?') for block in blocks]
+        logger.info(
+            f"Processing batch of {block_count} blocks", 
+            heights=f"{min(block_heights)}-{max(block_heights)}"
+        )
+        
+        # Sort blocks by height to ensure proper order for referential integrity
+        blocks.sort(key=lambda b: b.get('height', 0))
+        
+        # Process blocks in smaller sub-batches to minimize transaction size
+        # and maintain referential integrity while still getting some parallelism benefits
+        sub_batch_size = min(5, max(1, block_count // 2))
+        sub_batches = [blocks[i:i + sub_batch_size] for i in range(0, block_count, sub_batch_size)]
+        
+        for batch_idx, sub_batch in enumerate(sub_batches):
+            logger.debug(f"Processing sub-batch {batch_idx+1}/{len(sub_batches)} with {len(sub_batch)} blocks")
+            
+            # Use optimized transaction for multiple blocks
+            async with multi_block_transaction(block_count=len(sub_batch)) as session:
+                try:
+                    # Process each block but commit only at the end of the sub-batch
+                    for i, block_data in enumerate(sub_batch):
+                        try:
+                            # Validate block data
+                            self._validate_block_data(block_data)
+                            
+                            # Process block
+                            block = await self._process_block(session, block_data)
+                            
+                            # Process transactions
+                            block_transactions = block_data.get('blockTransactions', {}).get('transactions', [])
+                            if block_transactions:
+                                if self.config['bulk_insert']:
+                                    try:
+                                        await self._process_transactions_bulk(session, block, block_transactions)
+                                    except Exception as tx_error:
+                                        if "ForeignKeyViolation" in str(tx_error) or "foreign key constraint" in str(tx_error):
+                                            logger.warning(
+                                                "Foreign key constraint in bulk process, falling back to individual",
+                                                height=block_data.get('height')
+                                            )
+                                            # Fall back to individual transaction processing
+                                            await self._process_transactions(session, block, block_transactions)
+                                        else:
+                                            raise
+                                else:
+                                    await self._process_transactions(session, block, block_transactions)
+                            else:
+                                logger.warning("No transactions in block", height=block_data.get('height'))
+                            
+                            # Update progress counters without commit
+                            self.stats['blocks_processed'] += 1
+                            
+                        except Exception as e:
+                            logger.error(
+                                "Error processing block in batch",
+                                height=block_data.get('height'),
+                                error=str(e),
+                                exc_info=True
+                            )
+                            # If it's a foreign key violation, it usually means we're trying to process blocks too quickly
+                            if "ForeignKeyViolation" in str(e) or "foreign key constraint" in str(e):
+                                logger.warning(
+                                    "Foreign key constraint violation indicates referential integrity issue. Consider processing sequentially.",
+                                    height=block_data.get('height')
+                                )
+                                # Process this specific block individually
+                                await self._process_height(block_data.get('height'))
+                            else:
+                                # Continue with next block instead of failing the entire batch for other errors
+                                self.stats['errors'] += 1
+                                continue
+                            
+                    # Commit happens at the end of the context manager
+                    
+                except Exception as e:
+                    logger.error(
+                        "Fatal error processing blocks sub-batch",
+                        error=str(e),
+                        exc_info=True
+                    )
+                    self.stats['errors'] += 1
+                    # Try to process each block in the batch individually as a fallback
+                    for block_data in sub_batch:
+                        try:
+                            height = block_data.get('height')
+                            logger.info(f"Falling back to sequential processing for block {height}")
+                            await self._process_height(height)
+                        except Exception as individual_error:
+                            logger.error(
+                                "Error in individual block fallback",
+                                height=block_data.get('height'),
+                                error=str(individual_error)
+                            )
+        
+        logger.info(f"Successfully processed batch of {block_count} blocks")
+        return True
 
     @timed("process_block_with_transactions")
     async def _process_block_with_transactions(self, block_data: Dict[str, Any]):
