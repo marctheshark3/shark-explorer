@@ -6,11 +6,15 @@ WORKDIR /app
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
     build-essential \
+    libpq-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements and install Python dependencies
 COPY setup.py .
 COPY src ./src
+
+# Set environment variable to disable Prometheus multiprocessing
+ENV PROMETHEUS_MULTIPROC_DIR=""
 
 RUN pip install --no-cache-dir -e .
 

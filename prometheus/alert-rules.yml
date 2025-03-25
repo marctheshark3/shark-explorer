@@ -1,0 +1,116 @@
+groups:
+  - name: indexing_rules
+    rules:
+      - alert: IndexerFallingBehind
+        expr: max(node_height{job="ergo-node"}) - max(indexed_blocks{job="shark-indexer"}) > 10
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Indexer falling behind the node"
+          description: "Indexer is more than 10 blocks behind the node for more than 5 minutes"
+
+      - alert: IndexerStalledCompletely
+        expr: rate(indexed_blocks{job="shark-indexer"}[15m]) == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Indexer has stalled completely"
+          description: "No new blocks indexed in the last 15 minutes"
+
+      - alert: ChainReorgDetected
+        expr: increase(chain_reorg_events_total{job="shark-indexer"}[5m]) > 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Chain reorganization detected"
+          description: "Chain reorganization events detected in the last 5 minutes"
+
+  - name: api_rules
+    rules:
+      - alert: HighAPILatency
+        expr: histogram_quantile(0.95, sum by(le, endpoint) (rate(api_request_latency_seconds_bucket{job="shark-api"}[5m]))) > 0.5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High API latency detected"
+          description: "95th percentile latency for API endpoint {{ $labels.endpoint }} exceeds 500ms"
+
+      - alert: HighAPIErrorRate
+        expr: sum by(endpoint) (rate(api_errors_total{job="shark-api"}[5m])) / sum by(endpoint) (rate(api_requests_total{job="shark-api"}[5m])) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High API error rate"
+          description: "API endpoint {{ $labels.endpoint }} has error rate > 5% in the last 5 minutes"
+
+      - alert: APIServiceDown
+        expr: up{job="shark-api"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "API service is down"
+          description: "The API service is not responding to Prometheus scrapes"
+
+  - name: database_rules
+    rules:
+      - alert: HighDBConnections
+        expr: sum(api_db_connections_in_use{job="shark-api"}) > 80 or sum(pg_stat_activity_count{job="postgres-exporter"}) > 80
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High database connection usage"
+          description: "More than 80 database connections are currently in use"
+
+      - alert: HighDBLatency
+        expr: histogram_quantile(0.95, sum by(le, query_type) (rate(api_db_query_latency_seconds_bucket{job="shark-api"}[5m]))) > 1.0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High database query latency"
+          description: "95th percentile latency for database query type {{ $labels.query_type }} exceeds 1 second"
+
+      - alert: DatabaseDown
+        expr: up{job="postgres-exporter"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Database is down"
+          description: "The PostgreSQL database is not responding to Prometheus scrapes"
+
+  - name: system_rules
+    rules:
+      - alert: HighCPUUsage
+        expr: 100 - (avg by(instance) (irate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 85
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High CPU usage"
+          description: "CPU usage is above 85% for more than 10 minutes on {{ $labels.instance }}"
+
+      - alert: HighMemoryUsage
+        expr: (node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes) / node_memory_MemTotal_bytes * 100 > 90
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High memory usage"
+          description: "Memory usage is above 90% for more than 5 minutes on {{ $labels.instance }}"
+
+      - alert: HighDiskUsage
+        expr: 100 - ((node_filesystem_avail_bytes{mountpoint="/",fstype!="rootfs"} * 100) / node_filesystem_size_bytes{mountpoint="/",fstype!="rootfs"}) > 85
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High disk usage"
+          description: "Disk usage is above 85% for more than 5 minutes on {{ $labels.instance }}" 

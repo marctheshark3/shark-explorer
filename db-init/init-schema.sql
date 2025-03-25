@@ -20,8 +20,8 @@ CREATE TABLE blocks (
     miner_name VARCHAR(128),
     main_chain BOOLEAN NOT NULL,
     version INTEGER NOT NULL,
-    transactions_root VARCHAR(64),
-    state_root VARCHAR(64),
+    transactions_root VARCHAR(128),
+    state_root VARCHAR(128),
     pow_solutions JSONB,
     CONSTRAINT blocks_height_key UNIQUE (height)
 );
@@ -40,7 +40,8 @@ CREATE TABLE transactions (
     main_chain BOOLEAN NOT NULL,
     size INTEGER NOT NULL,
     fee BIGINT,
-    status VARCHAR(20) DEFAULT 'confirmed'
+    status VARCHAR(20) DEFAULT 'confirmed',
+    CONSTRAINT fk_transactions_block_id FOREIGN KEY (block_id) REFERENCES blocks (id)
 );
 
 CREATE INDEX transactions_block_id_idx ON transactions(block_id);

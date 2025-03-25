@@ -19,6 +19,15 @@ async def get_latest_block(
     block = await repo.get_latest()
     if not block:
         raise HTTPException(status_code=404, detail="No blocks found")
+    
+    # Handle if the result is a string ID instead of a Block object
+    if isinstance(block, str):
+        # Get the full block using the ID
+        block_obj = await repo.get(block)
+        if not block_obj:
+            raise HTTPException(status_code=404, detail="Block not found")
+        return BlockHeader.from_orm(block_obj)
+    
     return BlockHeader.from_orm(block)
 
 @router.get("/{block_id}", response_model=BlockDetail)
@@ -40,10 +49,20 @@ async def get_block_by_height(
 ) -> BlockDetail:
     """Get block by height."""
     repo = BlockRepository(db)
+    # First get the block ID by height
     block = await repo.get_by_height(height)
     if not block:
         raise HTTPException(status_code=404, detail="Block not found")
-    return BlockDetail.from_orm(block)
+    
+    # The block from get_by_height might be the ID string or a Block object
+    block_id = block.id if hasattr(block, 'id') else block
+    
+    # Then get the full block details using the ID
+    block_detail = await repo.get_block_with_details(block_id)
+    if not block_detail:
+        raise HTTPException(status_code=404, detail="Block not found")
+    
+    return block_detail
 
 @router.get("", response_model=PaginatedResponse[BlockHeader])
 async def get_blocks(

@@ -3,6 +3,7 @@ import aiohttp
 from typing import Optional
 from ..schemas.status import NodeStatus
 from .config import settings
+import logging
 
 async def get_node_status() -> NodeStatus:
     """Get node status from the Ergo node."""
@@ -11,11 +12,12 @@ async def get_node_status() -> NodeStatus:
             if response.status != 200:
                 raise RuntimeError(f"Failed to get node status: {response.status}")
             data = await response.json()
+            logging.error(f"Node response data: {data}")  # Debug log
             return NodeStatus(
-                height=data["fullHeight"],
-                headerId=data["bestHeaderId"],
-                lastBlockTime=data["lastBlockTimestamp"],
-                isMining=data["isMining"],
-                peersCount=data["peersCount"],
-                unconfirmedCount=data["unconfirmedCount"]
+                version=settings.VERSION,
+                network=settings.NETWORK,
+                block_height=data["fullHeight"],
+                is_mining=data["isMining"],
+                peers_count=data["peersCount"],
+                unconfirmed_count=data["unconfirmedCount"]
             ) 

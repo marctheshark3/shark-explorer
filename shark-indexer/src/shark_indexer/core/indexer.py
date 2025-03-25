@@ -4,8 +4,9 @@ from typing import List, Dict, Any, Optional
 import structlog
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import registry
 
-from ..db.models import Block, Transaction, Input, Output, Asset, SyncStatus, MiningReward, AddressStats
+from ..db.models import Block, Transaction, Input, Output, Asset, SyncStatus, MiningReward, AddressStats, mapper_registry
 from ..db.database import get_session
 from .node import NodeClient
 
@@ -57,6 +58,8 @@ class IndexerService:
     async def _update_sync_status(self):
         """Update sync status from node and database."""
         try:
+            # Note: SQLAlchemy registry is configured in __main__.py
+            
             node_height = await self.node.get_current_height()
             self.target_height = node_height
 
@@ -295,11 +298,13 @@ class IndexerService:
                 # Validate transaction data
                 self._validate_transaction_data(tx_data)
                 
-                # Calculate transaction fee
-                inputs_sum = sum(
-                    await self._get_output_value(session, input_box['boxId'])
-                    for input_box in tx_data.get('inputs', [])
-                )
+                # Calculate transaction fee - Fix for async generator issue
+                # Replace the sum() with explicit awaits
+                inputs_sum = 0
+                for input_box in tx_data.get('inputs', []):
+                    box_value = await self._get_output_value(session, input_box['boxId'])
+                    inputs_sum += box_value
+                
                 outputs_sum = sum(
                     output.get('value', 0)
                     for output in tx_data.get('outputs', [])

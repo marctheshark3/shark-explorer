@@ -1,6 +1,7 @@
 """Database models for the shark-api."""
 from sqlalchemy import Column, Integer, String, ForeignKey, BigInteger, Float, JSON, Boolean
-from sqlalchemy.orm import relationship, Mapped, mapped_column
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.orm import relationship, Mapped, mapped_column, deferred
 from sqlalchemy.ext.declarative import declarative_base
 
 Base = declarative_base()
@@ -9,27 +10,24 @@ class Block(Base):
     """Block model."""
     __tablename__ = "blocks"
 
-    id = Column(String, primary_key=True)
-    height = Column(Integer, nullable=False, index=True)
+    id = Column(String(64), primary_key=True)
+    header_id = Column(String(64), nullable=False)
+    parent_id = Column(String(64), nullable=True)  # Can be null for genesis block
+    height = Column(Integer, nullable=False)
     timestamp = Column(BigInteger, nullable=False)
     difficulty = Column(BigInteger, nullable=False)
     block_size = Column(Integer, nullable=False)
-    block_coins = Column(Float, nullable=False)
-    block_mining_time = Column(Integer, nullable=False)
+    block_coins = Column(BigInteger, nullable=False)
+    block_mining_time = Column(BigInteger, nullable=True)
     txs_count = Column(Integer, nullable=False)
-    miner_address = Column(String, nullable=False)
-    miner_name = Column(String, nullable=True)
-    block_fee = Column(Float, nullable=False)
-    block_chain_total_size = Column(BigInteger, nullable=False)
+    txs_size = Column(Integer, nullable=False)
+    miner_address = Column(String(64), nullable=True)
+    miner_name = Column(String(128), nullable=True)
     main_chain = Column(Boolean, nullable=False)
-    parent_id = Column(String, nullable=False)
-    extension_hash = Column(String, nullable=False)
     version = Column(Integer, nullable=False)
-    votes = Column(String, nullable=False)
-    ad_proofs_root = Column(String, nullable=False)
-    state_root = Column(String, nullable=False)
-    transactions_root = Column(String, nullable=False)
-    pow_solutions = Column(JSON, nullable=False)
+    transactions_root = Column(String(128), nullable=True)
+    state_root = Column(String(128), nullable=True)
+    pow_solutions = Column(JSONB, nullable=True)
 
     transactions = relationship("Transaction", back_populates="block")
     mining_rewards = relationship("MiningReward", back_populates="block")
@@ -40,32 +38,28 @@ class Transaction(Base):
 
     id = Column(String, primary_key=True)
     block_id = Column(String, ForeignKey("blocks.id"), nullable=False)
-    timestamp = Column(BigInteger, nullable=False)
-    size = Column(Integer, nullable=False)
-    index = Column(Integer, nullable=False)
-    global_index = Column(BigInteger, nullable=False)
-    inputs_count = Column(Integer, nullable=False)
-    outputs_count = Column(Integer, nullable=False)
-    inputs_raw = Column(String, nullable=False)
-    outputs_raw = Column(String, nullable=False)
-    total_value = Column(Float, nullable=False)
-    fee = Column(BigInteger, nullable=True)
+    header_id = Column(String, nullable=False)
     inclusion_height = Column(Integer, nullable=False)
+    timestamp = Column(BigInteger, nullable=False)
+    index = Column(Integer, nullable=False)
+    main_chain = Column(Boolean, nullable=False)
+    size = Column(Integer, nullable=False)
+    fee = Column(BigInteger, nullable=True)
+    status = Column(String, nullable=False, default="confirmed")
 
     block = relationship("Block", back_populates="transactions")
     inputs = relationship("Input", back_populates="transaction")
-    outputs = relationship("Output", back_populates="transaction")
+    outputs = relationship("Output", foreign_keys="[Output.tx_id]", back_populates="transaction")
 
 class Input(Base):
     """Input model."""
     __tablename__ = "inputs"
 
-    id = Column(String, primary_key=True)
-    transaction_id = Column(String, ForeignKey("transactions.id"), nullable=False)
-    box_id = Column(String, nullable=False)
+    box_id = Column(String, primary_key=True)
+    tx_id = Column(String, ForeignKey("transactions.id"), primary_key=True)
     index_in_tx = Column(Integer, nullable=False)
-    proof_bytes = Column(String, nullable=True)
-    extension = Column(JSON, nullable=True)
+    proof_bytes = Column(String)
+    extension = Column(JSON)
 
     transaction = relationship("Transaction", back_populates="inputs")
 
@@ -73,17 +67,18 @@ class Output(Base):
     """Output model."""
     __tablename__ = "outputs"
 
-    id = Column(String, primary_key=True)
-    transaction_id = Column(String, ForeignKey("transactions.id"), nullable=False)
-    box_id = Column(String, nullable=False)
+    box_id = Column(String, primary_key=True)
+    tx_id = Column(String, ForeignKey("transactions.id"), nullable=False)
     index_in_tx = Column(Integer, nullable=False)
     value = Column(BigInteger, nullable=False)
     creation_height = Column(Integer, nullable=False)
-    address = Column(String, nullable=True)
+    address = Column(String)
     ergo_tree = Column(String, nullable=False)
-    additional_registers = Column(JSON, nullable=False)
+    additional_registers = Column(JSON)
+    spent_by_tx_id = Column(String, ForeignKey("transactions.id"))
 
-    transaction = relationship("Transaction", back_populates="outputs")
+    transaction = relationship("Transaction", foreign_keys=[tx_id], back_populates="outputs")
+    spending_transaction = relationship("Transaction", foreign_keys=[spent_by_tx_id])
     assets = relationship("Asset", back_populates="output")
 
 class Asset(Base):
@@ -91,11 +86,12 @@ class Asset(Base):
     __tablename__ = "assets"
 
     id = Column(String, primary_key=True)
-    output_id = Column(String, ForeignKey("outputs.id"), nullable=False)
+    box_id = Column(String, ForeignKey("outputs.box_id"), nullable=False)
+    index_in_outputs = Column(Integer, nullable=False)
     token_id = Column(String, nullable=False)
     amount = Column(BigInteger, nullable=False)
-    name = Column(String, nullable=True)
-    decimals = Column(Integer, nullable=True)
+    name = Column(String)
+    decimals = Column(Integer)
 
     output = relationship("Output", back_populates="assets")
 
@@ -103,24 +99,22 @@ class MiningReward(Base):
     """Mining reward model."""
     __tablename__ = "mining_rewards"
 
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    block_id = Column(String, ForeignKey("blocks.id"), nullable=False)
-    address = Column(String, nullable=False)
-    value = Column(Float, nullable=False)
-    type = Column(String, nullable=False)
+    block_id = Column(String, ForeignKey("blocks.id"), primary_key=True)
+    reward_amount = Column(BigInteger, nullable=False)
+    fees_amount = Column(BigInteger, nullable=False)
+    miner_address = Column(String)
 
     block = relationship("Block", back_populates="mining_rewards")
 
 class AddressStats(Base):
     """Address statistics model."""
-    __tablename__ = 'address_stats'
+    __tablename__ = "address_stats"
 
     address = Column(String, primary_key=True)
-    first_active = Column(Integer)
-    last_active = Column(Integer)
-    total_transactions = Column(Integer, nullable=False, default=0)
-    total_received = Column(Integer, nullable=False, default=0)
-    total_sent = Column(Integer, nullable=False, default=0)
+    first_active_time = Column(BigInteger)
+    last_active_time = Column(BigInteger)
+    address_type = Column(String)
+    script_complexity = Column(Integer)
 
 class TokenInfo(Base):
     """Token information model."""

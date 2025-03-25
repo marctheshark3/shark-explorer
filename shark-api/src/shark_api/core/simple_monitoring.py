@@ -1,134 +1,147 @@
-"""Metrics and monitoring."""
+"""Simple metrics and monitoring."""
 import logging
 import asyncio
 import time
-import os
 import random
-from typing import Optional, Dict, Any, Callable, AsyncGenerator
+from typing import Optional, Dict, Any, List, Tuple
 import aiohttp
-from prometheus_client import Counter, Gauge, Info, Histogram, REGISTRY, CollectorRegistry, generate_latest
 from fastapi import APIRouter, FastAPI, Request, Response
 from starlette.responses import PlainTextResponse
-from sqlalchemy.ext.asyncio import AsyncSession
 import structlog
+import threading
 
-from ..api.node import Node
-from ..db.repositories.blocks import BlockRepository
-from ..db.repositories.transactions import TransactionRepository
-from ..db.dependencies import get_db_session
 from ..core.config import settings
 
 # Initialize structured logger
 logger = structlog.get_logger("metrics_updater")
 
-# Create registry
-registry = CollectorRegistry()
+# Custom simple metrics implementation
+class SimpleGauge:
+    """Simple gauge metric implementation."""
+    
+    def __init__(self, name: str, description: str):
+        """Initialize gauge."""
+        self.name = name
+        self.description = description
+        self._value = 0.0
+        self._lock = threading.Lock()
+    
+    def set(self, value: float) -> None:
+        """Set gauge value."""
+        with self._lock:
+            self._value = float(value)
+    
+    def get(self) -> float:
+        """Get gauge value."""
+        with self._lock:
+            return self._value
+    
+    def inc(self, amount: float = 1.0) -> None:
+        """Increment gauge value."""
+        with self._lock:
+            self._value += amount
+    
+    def dec(self, amount: float = 1.0) -> None:
+        """Decrement gauge value."""
+        with self._lock:
+            self._value -= amount
+    
+    def to_prometheus_format(self) -> str:
+        """Convert to Prometheus format."""
+        return f"# HELP {self.name} {self.description}\n# TYPE {self.name} gauge\n{self.name} {self.get()}\n"
 
-# Create router
-router = APIRouter()
+class SimpleCounter:
+    """Simple counter metric implementation."""
+    
+    def __init__(self, name: str, description: str):
+        """Initialize counter."""
+        self.name = name
+        self.description = description
+        self._value = 0.0
+        self._lock = threading.Lock()
+    
+    def inc(self, amount: float = 1.0) -> None:
+        """Increment counter value."""
+        with self._lock:
+            self._value += amount
+    
+    def get(self) -> float:
+        """Get counter value."""
+        with self._lock:
+            return self._value
+    
+    def to_prometheus_format(self) -> str:
+        """Convert to Prometheus format."""
+        return f"# HELP {self.name} {self.description}\n# TYPE {self.name} counter\n{self.name} {self.get()}\n"
+
+class SimpleRegistry:
+    """Simple registry for metrics."""
+    
+    def __init__(self):
+        """Initialize registry."""
+        self._metrics: List[object] = []
+    
+    def register(self, metric: object) -> None:
+        """Register metric."""
+        self._metrics.append(metric)
+    
+    def generate_latest(self) -> str:
+        """Generate latest metrics."""
+        result = ""
+        for metric in self._metrics:
+            result += metric.to_prometheus_format()
+        return result
+
+# Create registry
+registry = SimpleRegistry()
 
 # Define metrics
-http_requests_total = Counter(
-    "http_requests_total",
-    "Total count of HTTP requests by method and path",
-    ["method", "path", "status"],
-    registry=registry
-)
+node_height = SimpleGauge('node_height', 'Current height of the Ergo node')
+indexer_height = SimpleGauge('indexer_height', 'Current height indexed')
+sync_percentage = SimpleGauge('sync_percentage', 'Percentage of blockchain indexed')
+indexing_rate = SimpleGauge('indexing_rate', 'Rate of blocks indexed per second')
+total_transactions = SimpleGauge('total_transactions', 'Total number of transactions indexed')
+active_requests = SimpleGauge('active_requests', 'Number of active requests')
+request_latency = SimpleCounter('request_latency_seconds_total', 'Request latency in seconds total')
 
-http_request_duration_seconds = Histogram(
-    "http_request_duration_seconds",
-    "HTTP request duration in seconds by method and path",
-    ["method", "path"],
-    registry=registry
-)
+# Register all metrics
+registry.register(node_height)
+registry.register(indexer_height)
+registry.register(sync_percentage)
+registry.register(indexing_rate)
+registry.register(total_transactions)
+registry.register(active_requests)
+registry.register(request_latency)
 
-active_requests = Gauge(
-    "active_requests",
-    "Number of active requests",
-    registry=registry
-)
-
-db_query_duration_seconds = Histogram(
-    "db_query_duration_seconds",
-    "Database query duration in seconds",
-    ["operation"],
-    registry=registry
-)
-
-indexer_height = Gauge(
-    "indexer_height",
-    "Current height of the indexer",
-    registry=registry
-)
-
-node_height = Gauge(
-    "node_height",
-    "Current height of the Ergo node",
-    registry=registry
-)
-
-sync_percentage = Gauge(
-    "sync_percentage",
-    "Sync percentage of the indexer",
-    registry=registry
-)
-
-total_transactions = Gauge(
-    "total_transactions",
-    "Total number of indexed transactions",
-    registry=registry
-)
-
-indexing_rate = Gauge(
-    "indexing_rate",
-    "Rate of blocks indexed per second",
-    registry=registry
-)
-
-node_info = Info(
-    "node_info",
-    "Information about the connected Ergo node",
-    registry=registry
-)
-
-REFRESH_INTERVAL = int(os.getenv("METRICS_REFRESH_INTERVAL_SECONDS", "5"))
-
-async def monitoring_middleware(request: Request, call_next: Callable) -> Response:
-    """Monitor request duration and count."""
+# API request middleware
+async def metrics_middleware(request: Request, call_next):
+    """Middleware to record request metrics."""
     active_requests.inc()
     start_time = time.time()
     
-    try:
-        response = await call_next(request)
-        duration = time.time() - start_time
-        
-        http_requests_total.labels(
-            method=request.method,
-            path=request.url.path,
-            status=response.status_code
-        ).inc()
-        
-        http_request_duration_seconds.labels(
-            method=request.method,
-            path=request.url.path
-        ).observe(duration)
-        
-        return response
-    except Exception as e:
-        http_requests_total.labels(
-            method=request.method,
-            path=request.url.path,
-            status=500
-        ).inc()
-        raise e
-    finally:
-        active_requests.dec()
+    response = await call_next(request)
+    
+    duration = time.time() - start_time
+    active_requests.dec()
+    request_latency.inc(duration)
+    
+    return response
 
-@router.get("/metrics")
-async def metrics_endpoint(request: Request) -> Response:
-    """Expose Prometheus metrics."""
-    metrics = generate_latest(registry)
-    return PlainTextResponse(metrics)
+# Metrics endpoint
+def setup_monitoring(app: FastAPI) -> None:
+    """Setup monitoring for application."""
+    metrics_router = APIRouter()
+    
+    @metrics_router.get("/metrics", response_class=PlainTextResponse)
+    async def metrics():
+        """Prometheus metrics endpoint."""
+        return PlainTextResponse(registry.generate_latest())
+    
+    # Add router to app
+    app.include_router(metrics_router)
+    
+    # Add middleware
+    app.middleware("http")(metrics_middleware)
 
 async def metrics_updater(node_url: str, network: str):
     """Update metrics from the node and database."""
@@ -146,18 +159,11 @@ async def metrics_updater(node_url: str, network: str):
                         if response.status == 200:
                             data = await response.json()
                             current_node_height = data.get("fullHeight", 0)
-                            
-                            # Set node info
-                            node_data = {
-                                "network": network,
-                                "version": data.get("appVersion", "unknown"),
-                                "address": node_url
-                            }
-                            node_info.info(node_data)
+                            logger.info(f"Node height: {current_node_height}")
                             
                             # Set node height
-                            node_height.set(current_node_height)
-                            logger.debug(f"Node height: {current_node_height}")
+                            if current_node_height > 0:
+                                node_height.set(current_node_height)
                         else:
                             logger.warning(f"Failed to get node info: {response.status}")
                 except Exception as e:
@@ -165,9 +171,10 @@ async def metrics_updater(node_url: str, network: str):
             
             # Get transaction count from database
             try:
-                # Use a direct PostgreSQL connection instead of SQLAlchemy
+                # Use a direct PostgreSQL connection
                 import psycopg
-                # Get database connection details
+                
+                # Get database connection details from settings
                 dsn = f"postgresql://{settings.POSTGRES_USER}:{settings.POSTGRES_PASSWORD}@{settings.POSTGRES_HOST}:{settings.POSTGRES_PORT}/{settings.POSTGRES_DB}"
                 
                 # Connect and query
@@ -219,7 +226,7 @@ async def metrics_updater(node_url: str, network: str):
                             height_diff = current_indexer_height - last_indexer_height
                             current_indexing_rate = height_diff / time_diff
                             indexing_rate.set(current_indexing_rate)
-                            logger.debug(f"Indexing rate: {current_indexing_rate:.2f} blocks/s")
+                            logger.info(f"Indexing rate: {current_indexing_rate:.2f} blocks/s")
                         
                         last_indexer_height = current_indexer_height
                         last_update_time = current_time
@@ -235,25 +242,4 @@ async def metrics_updater(node_url: str, network: str):
             logger.error(traceback.format_exc())
         
         # Sleep for 5 seconds
-        await asyncio.sleep(5)
-
-def setup_monitoring(app: FastAPI) -> None:
-    """
-    Setup monitoring for application.
-    """
-    metrics_endpoint = APIRouter()
-    
-    @metrics_endpoint.get("/metrics", response_class=PlainTextResponse)
-    async def get_metrics():
-        """
-        Endpoint that serves Prometheus metrics.
-        """
-        # Use our registry instead of MultiProcessCollector
-        metrics = generate_latest(registry)
-        
-        return PlainTextResponse(metrics)
-    
-    app.include_router(metrics_endpoint)
-    
-    # We don't need to start metrics_updater here, it's handled in app.py now
-    # The metrics_updater function is not meant to be called directly here
+        await asyncio.sleep(5) 

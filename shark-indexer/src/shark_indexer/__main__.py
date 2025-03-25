@@ -1,11 +1,14 @@
 import asyncio
 import logging
 import structlog
+import os
 from dotenv import load_dotenv
+from sqlalchemy.orm import registry
 
 from .core.node import NodeClient
 from .core.indexer import IndexerService
 from .db.database import init_db
+from .db.models import mapper_registry
 
 # Configure logging
 logging.basicConfig(
@@ -34,9 +37,31 @@ async def main():
         # Load environment variables
         load_dotenv()
 
+        # Get reset_db flag from environment
+        reset_db = os.getenv('RESET_DB', 'false').lower() == 'true'
+
+        # Configure SQLAlchemy registry - this is the only place in the codebase this should be called
+        logger.info("Configuring SQLAlchemy registry...")
+        mapper_registry.configure()
+
+        # Manually add the metadata property to TokenInfo to satisfy API requirements
+        logger.info("Adding metadata property to TokenInfo...")
+        from .db.models import TokenInfo
+        
+        # Instead of using register_attribute, use a simple property
+        @property
+        def get_metadata(self):
+            return self.asset_metadata
+            
+        # Add the property to the TokenInfo class
+        TokenInfo.metadata = get_metadata
+        logger.info("Metadata property added successfully")
+
         # Initialize database
         logger.info("Initializing database...")
-        await init_db()
+        if reset_db:
+            logger.warning("Database reset requested. All existing data will be deleted.")
+        await init_db(reset_db=reset_db)
 
         # Create node client
         logger.info("Creating node client...")

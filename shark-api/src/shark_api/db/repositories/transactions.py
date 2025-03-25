@@ -1,15 +1,22 @@
 """Transaction repository."""
 from typing import Optional, List, Dict, Any
-from sqlalchemy import select, desc, func
+from sqlalchemy import select, desc, func, text
 from sqlalchemy.orm import joinedload
 from sqlalchemy.ext.asyncio import AsyncSession
+import logging
 
 from .base import BaseRepository
 from ..models import Transaction, Input, Output, Asset
 from ...schemas.transactions import TransactionDetail, AddressTransaction
 
+logger = logging.getLogger(__name__)
+
 class TransactionRepository(BaseRepository[Transaction]):
     """Repository for transaction operations."""
+    
+    def __init__(self, session: AsyncSession):
+        """Initialize repository."""
+        super().__init__(Transaction, session)
 
     async def get_transaction_with_details(self, tx_id: str) -> Optional[TransactionDetail]:
         """Get transaction with all details."""
@@ -115,4 +122,37 @@ class TransactionRepository(BaseRepository[Transaction]):
             .where(Output.address == address)
         )
 
-        return (input_count.scalar_one() or 0) + (output_count.scalar_one() or 0) 
+        return (input_count.scalar_one() or 0) + (output_count.scalar_one() or 0)
+        
+    async def get_total_count(self) -> int:
+        """
+        Get the total count of transactions using a direct SQL query for performance.
+        
+        Returns:
+            int: The total count of transactions in the database
+        """
+        try:
+            # Use direct SQL for better performance on large tables
+            result = await self.session.execute(text("SELECT COUNT(*) FROM transactions"))
+            count = result.scalar_one() or 0
+            
+            # Log the count for debugging
+            logger.info(f"Transaction count from direct SQL: {count}")
+            
+            # If the count is zero but we know there should be transactions,
+            # fall back to the SQLAlchemy query as a verification
+            if count == 0:
+                logger.warning("Direct SQL count returned zero, verifying with SQLAlchemy query")
+                backup_query = select(func.count()).select_from(Transaction)
+                backup_result = await self.session.execute(backup_query)
+                backup_count = backup_result.scalar_one() or 0
+                
+                if backup_count > 0:
+                    logger.warning(f"SQLAlchemy query returned {backup_count} transactions, using this count instead")
+                    return backup_count
+            
+            return count
+        except Exception as e:
+            logger.error(f"Error getting transaction count: {e}")
+            # Return 0 instead of raising to avoid breaking metrics
+            return 0 
